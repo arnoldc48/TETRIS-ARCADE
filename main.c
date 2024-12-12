@@ -28,8 +28,7 @@
 #include "tm4c123gh6pm.h"
 #include "Nokia5110.h"
 #include "pieces.h"
-#include "melodia.h"
-#include "BuzzerLib.h"
+#include "NOTES.h"
 #include "UART_ESP32C3.h"
 #include "Nokia5110_Keyboard.h"
 
@@ -63,6 +62,127 @@ uint16_t contadortiempo = 0;
 uint32_t guardartiempo;
 uint16_t contadorstop = 255;
 uint8_t w=0;
+
+
+// Partitura: Melodía inspirada en Tetris
+const uint32_t partitura[] = {
+    // Primera sección
+    NOTE_E52, NOTE_E5_DUR, NOTE_B42, NOTE_B4_DUR, NOTE_C52, NOTE_C5_DUR, NOTE_D52, NOTE_D5_DUR,
+    NOTE_C52, NOTE_C5_DUR, NOTE_B42, NOTE_B4_DUR, NOTE_A42, NOTE_A4_DUR, NOTE_A42, NOTE_A4_DUR,
+    NOTE_C52, NOTE_C5_DUR, NOTE_E52, NOTE_E5_DUR, NOTE_D52, NOTE_D5_DUR, NOTE_C52, NOTE_C5_DUR,
+    NOTE_B42, NOTE_B4_DUR, NOTE_B42, NOTE_B4_DUR, NOTE_C52, NOTE_C5_DUR, NOTE_D52, NOTE_D5_DUR,
+    NOTE_E52, NOTE_E5_DUR, NOTE_C52, NOTE_C5_DUR, NOTE_A42, NOTE_A4_DUR, NOTE_A42, NOTE_A4_DUR, NOTA_SILENC,
+    NOTE_NONE,
+    // Segunda sección
+    NOTE_D52, NOTE_D5_DUR, NOTE_F52, NOTE_F5_DUR, NOTE_A52, NOTE_A4_DUR, NOTE_G52, NOTE_G5_DUR,
+    NOTE_F52, NOTE_F5_DUR, NOTE_E52, NOTE_E5_DUR, NOTE_C52, NOTE_C5_DUR, NOTE_E52, NOTE_E5_DUR,
+    NOTE_D52, NOTE_D5_DUR, NOTE_C52, NOTE_C5_DUR, NOTE_B42, NOTE_B4_DUR, NOTE_B42, NOTE_B4_DUR,
+    NOTE_C52, NOTE_C5_DUR, NOTE_D52, NOTE_D5_DUR, NOTE_E52, NOTE_E5_DUR, NOTE_C52, NOTE_C5_DUR,
+    NOTE_A42, NOTE_A4_DUR, NOTE_A42, NOTE_A4_DUR, NOTA_SILENC,NOTE_NONE,
+
+    // Tercera sección
+    NOTE_E52, NOTE_E5_DUR, NOTE_B42, NOTE_B4_DUR, NOTE_C52, NOTE_C5_DUR, NOTE_D52, NOTE_D5_DUR,
+    NOTE_C52, NOTE_C5_DUR, NOTE_B42, NOTE_B4_DUR, NOTE_A42, NOTE_A4_DUR, NOTE_A42, NOTE_A4_DUR,
+    NOTE_C52, NOTE_C5_DUR, NOTE_E52, NOTE_E5_DUR, NOTE_D52, NOTE_D5_DUR, NOTE_C52, NOTE_C5_DUR,
+    NOTE_B42, NOTE_B4_DUR, NOTE_B42, NOTE_B4_DUR, NOTE_C52, NOTE_C5_DUR, NOTE_D52, NOTE_D5_DUR,
+    NOTE_E52, NOTE_E5_DUR, NOTE_C52, NOTE_C5_DUR, NOTE_A42, NOTE_A4_DUR, NOTE_A42, NOTE_A4_DUR, NOTA_SILENC,
+    NOTE_NONE,
+    // Cuarta sección
+    NOTE_D52, NOTE_D5_DUR, NOTE_F52, NOTE_F5_DUR, NOTE_A52, NOTE_A4_DUR, NOTE_G52, NOTE_G5_DUR,
+    NOTE_F52, NOTE_F5_DUR, NOTE_E52, NOTE_E5_DUR, NOTE_C52, NOTE_C5_DUR, NOTE_E52, NOTE_E5_DUR,
+    NOTE_D52, NOTE_D5_DUR, NOTE_C52, NOTE_C5_DUR, NOTE_B42, NOTE_B4_DUR, NOTE_B42, NOTE_B4_DUR,
+    NOTE_C52, NOTE_C5_DUR, NOTE_D52, NOTE_D5_DUR, NOTE_E52, NOTE_E5_DUR, NOTE_C52, NOTE_C5_DUR,
+    NOTE_A42, NOTE_A4_DUR, NOTE_A42, NOTE_A4_DUR, NOTA_SILENC,NOTE_NONE,
+
+    // Quinta sección
+    NOTE_B42, NOTE_B4_DUR, NOTE_C52, NOTE_C5_DUR, NOTE_D52, NOTE_D5_DUR, NOTE_E52, NOTE_E5_DUR,
+    NOTE_C52, NOTE_C5_DUR, NOTE_A42, NOTE_A4_DUR, NOTE_A42, NOTE_A4_DUR, NOTA_SILENC
+};
+
+
+// Variables globales
+volatile uint32_t notaActual = 0;  // Índice de la nota actual en la partitura
+volatile uint32_t tiempoNota = 0;  // Tiempo restante de la nota actual
+volatile uint8_t enSilencio = 0;   // Indica si estamos en silencio
+
+void configuraPiano(void) {
+    SYSCTL_RCGC2_R |= SYSCTL_RCGC2_GPIOB;       // Habilitar reloj para Puerto B
+    while (!(SYSCTL_PRGPIO_R & SYSCTL_PRGPIO_R1)); // Esperar activación del reloj
+
+    GPIO_PORTB_AFSEL_R |= 0x04;                // Seleccionar función alternativa en PB2
+    GPIO_PORTB_PCTL_R = (GPIO_PORTB_PCTL_R & ~0x00000F00) | 0x00000700; // PB2 como T3CCP0
+    GPIO_PORTB_DEN_R |= 0x04;                  // Habilitar función digital en PB2
+    GPIO_PORTB_DIR_R |= 0x04;                  // Configurar PB2 como salida
+
+    SYSCTL_RCGCTIMER_R |= SYSCTL_RCGCTIMER_R3; // Activar reloj para TIMER3
+    while (!(SYSCTL_PRTIMER_R & SYSCTL_PRTIMER_R3)); // Esperar activación del reloj
+
+    TIMER3_CTL_R &= ~TIMER_CTL_TAEN;           // Deshabilitar TIMER3A para configurar
+    TIMER3_CFG_R = 0x4;                        // Configurar modo de 16 bits
+    TIMER3_TAMR_R = 0x0A;                      // Configurar modo PWM periódico
+    TIMER3_CTL_R |= TIMER_CTL_TAPWML;          // Configurar PWM invertido
+}
+
+void generaNota(uint8_t nota) {
+    if (nota == NOTA_SILENC || tablaModulos[nota] == 0) {
+        TIMER3_CTL_R &= ~TIMER_CTL_TAEN; // Detener temporizador
+        return;
+    }
+
+    uint32_t modulo = tablaModulos[nota];
+    TIMER3_TAILR_R = modulo - 1;            // Configurar el periodo
+    TIMER3_TAMATCHR_R = (modulo / 2) - 1;  // Ciclo de trabajo al 50%
+    TIMER3_CTL_R |= TIMER_CTL_TAEN;        // Activar el temporizador
+}
+
+
+void configuraSysTick(void) {
+    //Inhabilitamos el módulo SysTick
+    NVIC_ST_CTRL_R &= ~NVIC_ST_CTRL_ENABLE;
+    NVIC_ST_RELOAD_R = (NVIC_ST_RELOAD_R&0xFF000000)|159999;
+    // Iniciamos el contador con cero (escribiendo cualquier valor)
+    NVIC_ST_CURRENT_R &= ~(0x00FFFFFF);
+    // Habilitamos el módulo SysTick
+    NVIC_ST_CTRL_R = NVIC_ST_CTRL_CLK_SRC | NVIC_ST_CTRL_INTEN | NVIC_ST_CTRL_ENABLE; // Habilitar SysTick
+}
+
+void SysTick_Handler(void) {
+    if (notaActual >= sizeof(partitura) / sizeof(partitura[0])) {
+        // Fin de la partitura, apagar buzzer y deshabilitar SysTick
+        TIMER3_CTL_R &= ~TIMER_CTL_TAEN;  // Detener temporizador del buzzer
+        GPIO_PORTB_DATA_R &= ~0x04;       // Asegurarse de que el pin PB2 esté en bajo
+        GPIO_PORTB_DIR_R &= ~0x04;       // Configurar PB2 como entrada para evitar cualquier señal residual
+        NVIC_ST_CTRL_R &= ~NVIC_ST_CTRL_ENABLE;  // Deshabilitar SysTick
+        return;  // Salir del manejador
+    }
+
+    if (tiempoNota == 0) {
+        if (enSilencio) {
+            enSilencio = 0; // Finaliza el silencio
+            notaActual += 2; // Avanzar al siguiente par (nota y duración)
+            if (notaActual < sizeof(partitura) / sizeof(partitura[0])) {
+                generaNota(partitura[notaActual]); // Generar nueva nota
+                tiempoNota = partitura[notaActual + 1]; // Duración completa de la nota
+            }
+        } else {
+            generaNota(NOTA_SILENC); // Generar silencio
+            enSilencio = 1;
+            tiempoNota = partitura[notaActual + 1]; // Duración completa de silencio
+        }
+    } else {
+        tiempoNota--; // Reducir tiempo restante
+    }
+}
+void enable_irq(void) {
+    __asm(" cpsie i \n");
+}
+
+void disable_irq(void) {
+    __asm(" cpsid i \n");
+}
+
+
+
 // Posición y estado de la pieza actual
 typedef struct {
     int x;
@@ -73,18 +193,6 @@ typedef struct {
 
 TetrisPiece currentPiece;
 
-//**************************************************************************************************************
-//******************* Configurando el Puerto B pin 4 para funciones especiales *********************************
-//**************************************************************************************************************
-void Config_Puerto_B(void) {
-    SYSCTL_RCGC2_R |= SYSCTL_RCGC2_GPIOB; // Habilitamos Puerto B (PB)
-    while(!(SYSCTL_PRGPIO_R & SYSCTL_PRGPIO_R1)); // Esperamos a que se active
-    GPIO_PORTB_AMSEL_R &= ~(0X10); // Desactivando funciones analÃƒÂ³gicas para PB4
-    GPIO_PORTB_AFSEL_R |= 0X10;    // Seleccionando PB4 para funciones especiales
-    GPIO_PORTB_DIR_R |= 0X10;      // PB4 como salida
-    GPIO_PORTB_PCTL_R = (GPIO_PORTB_PCTL_R & 0XFFF0FFFF) | 0X70000; // PB4 como T1CCP0
-    GPIO_PORTB_DEN_R |= 0X10;      // Habilitando PB4
-}
 
 void Config_Puerto_C(void) {
     SYSCTL_RCGCGPIO_R |= SYSCTL_RCGCGPIO_R2; // Activa el puerto C
@@ -114,7 +222,7 @@ void ConfiguraTimer_1ms(void) {
     // Iniciamos el contador con cero (escribiendo cualquier valor)
     NVIC_ST_CURRENT_R &= ~(0x00FFFFFF);
     // Habilitamos el módulo SysTick
-    NVIC_ST_CTRL_R |= (NVIC_ST_CTRL_CLK_SRC | NVIC_ST_CTRL_ENABLE);
+    NVIC_ST_CTRL_R = NVIC_ST_CTRL_CLK_SRC | NVIC_ST_CTRL_ENABLE; // Habilitar SysTick
 }
 
 // Función para agregar una pieza al tablero
@@ -344,27 +452,21 @@ void uploadScore(void){
     UART1_Transmite_Cadena(";");
 }
 
-// Función principal
- int main(void) {
-  //  uint32_t ValDC = DC_inicial; // DC inicial de 50%
-  //  int *pMelody = musica;
-  //  int *pTempo = musica_tempo;
-  //  int size = sizeof(musica) / sizeof(int);
-  //  int playing = 0; // Estado inicial: música apagada
 
+
+// Función principal
+int main(void) {
+     configuraPiano();
+     disable_irq();
+     configuraSysTick();
+     enable_irq();
     int row,col;
 
     InitSystem();
 
-    Config_Puerto_B();
     Config_Puerto_C();
     ConfiguraTimer_1ms();
     UART1_Init();
-    /*InicializaBuzzer();
-    Apaga_PWM(); // Asegura que el buzzer esté apagado inicialmente
-    musicaBuzzer(tetris_musica, tetris_musica_tempo, TETRIS_MELODY_SIZE);*/
-
-    // LOOP GENERAL
     while (1) {
         int game = 0;
 
